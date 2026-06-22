@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-答弁訓練ログ Notion 登録ツール
+答弁訓練ログ Notion 登録ツール（シンプル版）
 
 議会・委員会答弁訓練の記録を、Notion データベース「答弁訓練ログ」に1ページとして
 追加するスクリプトです。入力は JSON ファイルで差し替えられます。
 
-設計方針:
-- AI の助言全文や模範答弁全文はそのまま保存しません。
-- 保存するのは、ユーザー自身の答弁・質問の要約・弱点・次回使う型・改善ポイントです。
-- 長文7項目はページ本文の見出しに、検索用のメタ情報はデータベースのプロパティに入れます。
+設計方針（続けやすさ優先）:
+- プロパティは最小限（タイトル / 日付 / 分野 / 次回使う型）。振り分けの手間を減らす。
+- 本文は決まった見出しを強制しない。JSON の "sections" に書いた見出しが、
+  書いた順番でそのまま出力される「汎用フォーマット」。最小は3見出しでOK。
+- AI の助言全文や模範答弁全文はそのまま保存しない。自分の答弁・要約・次回使う型が中心。
 
 セットアップ:
     pip install -r requirements.txt
@@ -19,7 +20,7 @@
     python notion_training_log.py training_logs/2026-06-22_kokuho.json
     python notion_training_log.py training_logs/2026-06-22_kokuho.json --dry-run
 
-入力 JSON のスキーマは training_logs/2026-06-22_kokuho.json を参照してください。
+入力 JSON の最小例は training_logs/_template.json を参照してください。
 """
 
 import os
@@ -37,17 +38,6 @@ except ImportError:
 NOTION_API = "https://api.notion.com/v1/pages"
 NOTION_VERSION = "2022-06-28"
 
-# 本文に出力する見出しの順番（タスクの指定どおり）
-BODY_SECTION_ORDER = [
-    "元質問の要約",
-    "聞き取り3点メモ",
-    "答える前の整理",
-    "自分の初稿",
-    "自分の最終答弁",
-    "弱点",
-    "次回使う型",
-]
-
 
 def _rich_text(content: str) -> list[dict]:
     """Notion の rich_text 配列を作る（2000文字制限に配慮して分割）。"""
@@ -56,7 +46,7 @@ def _rich_text(content: str) -> list[dict]:
 
 
 def build_properties(data: dict) -> dict:
-    """JSON からデータベースのプロパティ payload を作る。"""
+    """JSON から最小限のプロパティ payload を作る。"""
     props: dict = {
         "タイトル": {"title": _rich_text(data["title"])},
     }
@@ -64,26 +54,16 @@ def build_properties(data: dict) -> dict:
         props["日付"] = {"date": {"start": data["date"]}}
     if data.get("field"):
         props["分野"] = {"select": {"name": data["field"]}}
-    if data.get("question_type"):
-        props["質問区分"] = {"select": {"name": data["question_type"]}}
-    if data.get("themes"):
-        props["質問テーマ"] = {"multi_select": [{"name": t} for t in data["themes"]]}
-    if data.get("tags"):
-        props["タグ"] = {"multi_select": [{"name": t} for t in data["tags"]]}
-    if data.get("status"):
-        props["ステータス"] = {"select": {"name": data["status"]}}
-    if data.get("weakness_summary"):
-        props["弱点"] = {"rich_text": _rich_text(data["weakness_summary"])}
-    if data.get("next_pattern_summary"):
-        props["次回使う型"] = {"rich_text": _rich_text(data["next_pattern_summary"])}
+    if data.get("next_pattern"):
+        props["次回使う型"] = {"rich_text": _rich_text(data["next_pattern"])}
     return props
 
 
 def build_children(sections: dict) -> list[dict]:
-    """本文ブロック（見出し + 段落）を、指定の順番で作る。"""
+    """本文ブロックを作る。JSON に書いた見出しを書いた順番でそのまま出力する。"""
     children: list[dict] = []
-    for heading in BODY_SECTION_ORDER:
-        text = (sections.get(heading) or "").strip()
+    for heading, text in sections.items():
+        text = (text or "").strip()
         if not text:
             continue
         children.append({
